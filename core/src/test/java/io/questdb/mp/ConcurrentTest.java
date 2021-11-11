@@ -28,7 +28,6 @@ import io.questdb.log.Log;
 import io.questdb.log.LogFactory;
 import io.questdb.std.LongList;
 import io.questdb.std.Numbers;
-import io.questdb.std.Os;
 import io.questdb.std.Rnd;
 import org.junit.Assert;
 import org.junit.Test;
@@ -715,12 +714,13 @@ public class ConcurrentTest {
 
         CyclicBarrier barrier = new CyclicBarrier(4);
         CountDownLatch latch = new CountDownLatch(3);
+        CountDownLatch pubStartLatch = new CountDownLatch(1);
 
         BusyConsumer[] consumers = new BusyConsumer[2];
         consumers[0] = new BusyConsumer(size, sub1, queue, barrier, latch);
         consumers[1] = new BusyConsumer(size, sub2, queue, barrier, latch);
 
-        BusySubscriber subscriber = new BusySubscriber(queue, barrier, latch, fanOut);
+        BusySubscriber subscriber = new BusySubscriber(queue, barrier, latch, pubStartLatch, fanOut);
         subscriber.start();
 
         consumers[0].start();
@@ -736,6 +736,9 @@ public class ConcurrentTest {
             queue.get(cursor).value = i++;
             pubSeq.done(cursor);
 
+            if (i == cycle) {
+                pubStartLatch.countDown();
+            }
             if (i == size) {
                 break;
             }
@@ -772,15 +775,15 @@ public class ConcurrentTest {
         private final int[] buf;
         private final RingQueue<Event> queue;
         private final CyclicBarrier barrier;
-        private final CountDownLatch latch;
+        private final CountDownLatch doneLatch;
         private volatile int finalIndex = 0;
 
-        BusyConsumer(int cycle, Sequence sequence, RingQueue<Event> queue, CyclicBarrier barrier, CountDownLatch latch) {
+        BusyConsumer(int cycle, Sequence sequence, RingQueue<Event> queue, CyclicBarrier barrier, CountDownLatch doneLatch) {
             this.sequence = sequence;
             this.buf = new int[cycle];
             this.queue = queue;
             this.barrier = barrier;
-            this.latch = latch;
+            this.doneLatch = doneLatch;
         }
 
         @Override
@@ -804,7 +807,7 @@ public class ConcurrentTest {
                 }
 
                 finalIndex = p;
-                latch.countDown();
+                doneLatch.countDown();
             } catch (Exception e) {
                 e.printStackTrace();
             }
@@ -815,14 +818,22 @@ public class ConcurrentTest {
         private final int[] buf;
         private final RingQueue<Event> queue;
         private final CyclicBarrier barrier;
-        private final CountDownLatch latch;
+        private final CountDownLatch doneLatch;
+        private final CountDownLatch pubStartLatch;
         private final FanOut fanOut;
 
-        BusySubscriber(RingQueue<Event> queue, CyclicBarrier barrier, CountDownLatch latch, FanOut fanOut) {
+        BusySubscriber(
+                RingQueue<Event> queue,
+                CyclicBarrier barrier,
+                CountDownLatch doneLatch,
+                CountDownLatch pubStartLatch,
+                FanOut fanOut
+        ) {
             this.buf = new int[20];
             this.queue = queue;
             this.barrier = barrier;
-            this.latch = latch;
+            this.doneLatch = doneLatch;
+            this.pubStartLatch = pubStartLatch;
             this.fanOut = fanOut;
         }
 
@@ -830,7 +841,7 @@ public class ConcurrentTest {
         public void run() {
             try {
                 barrier.await();
-                Os.sleep(10);
+                pubStartLatch.await();
 
                 // subscribe
                 Sequence sequence = new SCSequence(0);
@@ -853,7 +864,7 @@ public class ConcurrentTest {
 
                 fanOut.remove(sequence);
 
-                latch.countDown();
+                doneLatch.countDown();
             } catch (Exception e) {
                 e.printStackTrace();
             }
